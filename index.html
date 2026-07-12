@@ -143,7 +143,7 @@ import { STLLoader } from 'three/addons/loaders/STLLoader.js';
    - PAGE_TITLE: shown at the top of the page
    ================================================================ */
 const MODEL_URL = "https://raw.githubusercontent.com/muddssir369-tech/Sample-/refs/heads/main/sample.obj";
-const PAGE_TITLE = "sample";
+const PAGE_TITLE = "Sample Model";
 /* ================================================================ */
 
 document.getElementById('page-title').textContent = PAGE_TITLE;
@@ -257,32 +257,60 @@ function resolveShareLink(url){
 
 function smartParse(buffer){
   return new Promise((resolve, reject) => {
-    const gltfLoader = new GLTFLoader();
-    gltfLoader.parse(buffer, '', (gltf) => resolve({ obj: gltf.scene, kind: 'GLTF/GLB' }), () => tryStl());
+    const bytes = new Uint8Array(buffer);
+    let text = null;
+    try{ text = new TextDecoder('utf-8', { fatal:false }).decode(buffer); }catch(e){}
 
-    function tryStl(){
+    const isGlbMagic = bytes.length > 4 && bytes[0]===0x67 && bytes[1]===0x6C && bytes[2]===0x54 && bytes[3]===0x46; // 'glTF'
+    const looksLikeGltfJson = !!text && text.trim().startsWith('{');
+    const looksLikeStlAscii = !!text && /^\s*solid\b/i.test(text);
+    const looksLikeObj = !!text && /(^|\n)\s*(v |vn |vt |f |usemtl|mtllib|o |g )/i.test(text.slice(0, 3000));
+
+    function tryGltf(next){
+      try{
+        const gltfLoader = new GLTFLoader();
+        gltfLoader.parse(buffer, '', (gltf) => resolve({ obj: gltf.scene, kind: 'GLTF/GLB' }), () => next());
+      }catch(e){ next(); }
+    }
+
+    function tryStl(next){
       try{
         const stlLoader = new STLLoader();
         const geometry = stlLoader.parse(buffer);
         if(geometry && geometry.attributes.position && geometry.attributes.position.count > 0){
           geometry.computeVertexNormals();
           resolve({ obj: new THREE.Mesh(geometry, defaultMaterial()), kind: 'STL' });
-        } else { tryObj(); }
-      }catch(e){ tryObj(); }
+          return;
+        }
+      }catch(e){}
+      next();
     }
 
-    function tryObj(){
+    function tryObj(next){
       try{
-        const text = new TextDecoder('utf-8').decode(buffer);
-        const objLoader = new OBJLoader();
-        const obj = objLoader.parse(text);
-        if(hasVertices(obj)){
-          obj.traverse(o=>{ if(o.isMesh) o.material = defaultMaterial(); });
-          resolve({ obj, kind: 'OBJ' });
-        } else {
-          reject(new Error('Could not identify format'));
+        if(text){
+          const objLoader = new OBJLoader();
+          const obj = objLoader.parse(text);
+          if(hasVertices(obj)){
+            obj.traverse(o=>{ if(o.isMesh) o.material = defaultMaterial(); });
+            resolve({ obj, kind: 'OBJ' });
+            return;
+          }
         }
-      }catch(e){ reject(e); }
+      }catch(e){}
+      next();
+    }
+
+    const fail = () => reject(new Error('Could not identify format'));
+
+    if(isGlbMagic || looksLikeGltfJson){
+      tryGltf(() => tryObj(() => tryStl(fail)));
+    } else if(looksLikeObj){
+      tryObj(() => tryStl(() => tryGltf(fail)));
+    } else if(looksLikeStlAscii){
+      tryStl(() => tryObj(() => tryGltf(fail)));
+    } else {
+      tryStl(() => tryGltf(() => tryObj(fail)));
     }
   });
 }
