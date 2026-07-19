@@ -22,7 +22,7 @@
      EDIT THESE TWO VALUES BEFORE PUBLISHING — see comments below
      ============================================================ */
   :root{
-    --bg:#e6edf7;
+    --bg:#0B1D3A;
     --panel:#0F2749;
     --line:#2A4A78;
     --line-soft:rgba(79,216,235,0.14);
@@ -135,6 +135,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+import { MTLLoader } from 'three/addons/loaders/MTLLoader.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 
 /* ================================================================
@@ -287,8 +288,10 @@ function smartParse(buffer){
     }
 
     function tryObj(next){
-      try{
-        if(text){
+      if(!text){ next(); return; }
+
+      function plainObjFallback(){
+        try{
           const objLoader = new OBJLoader();
           const obj = objLoader.parse(text);
           if(hasVertices(obj)){
@@ -296,9 +299,32 @@ function smartParse(buffer){
             resolve({ obj, kind: 'OBJ' });
             return;
           }
-        }
-      }catch(e){}
-      next();
+        }catch(e){}
+        next();
+      }
+
+      const mtlMatch = text.match(/^\s*mtllib\s+(.+?)\s*$/im);
+      if(!mtlMatch){ plainObjFallback(); return; }
+
+      let mtlUrl;
+      try{
+        mtlUrl = new URL(mtlMatch[1].trim(), resolveShareLink(MODEL_URL)).toString();
+      }catch(e){ plainObjFallback(); return; }
+
+      const mtlLoader = new MTLLoader();
+      mtlLoader.load(mtlUrl, (materials) => {
+        try{
+          materials.preload();
+          const objLoader = new OBJLoader();
+          objLoader.setMaterials(materials);
+          const obj = objLoader.parse(text);
+          if(hasVertices(obj)){
+            resolve({ obj, kind: 'OBJ + MTL' });
+            return;
+          }
+        }catch(e){}
+        plainObjFallback();
+      }, undefined, () => plainObjFallback());
     }
 
     const fail = () => reject(new Error('Could not identify format'));
